@@ -25,12 +25,12 @@ if __name__ == '__main__':
     
     if args.depth_generator == "DPT":
         base_generator_args = [
-            "python", f"{generator_dir}/run_monodepth.py",
+            sys.executable, f"{generator_dir}/run_monodepth.py",
             "-t", "dpt_large"
         ]
     else:
         base_generator_args = [
-            "python", f"{generator_dir}/run.py",
+            sys.executable, f"{generator_dir}/run.py",
             "--encoder", "vitl", "--pred-only", "--grayscale"
         ]
 
@@ -67,7 +67,7 @@ if __name__ == '__main__':
     print(f"generating depth_params.json for chunks {os.listdir(args.chunks_dir)}.")
     try:
         subprocess.run([
-            "python", "preprocess/make_chunks_depth_scale.py", "--chunks_dir", f"{args.chunks_dir}", "--depths_dir", f"{os.path.join(args.project_dir, "camera_calibration/rectified", "depths")}"],
+            sys.executable, "preprocess/make_chunks_depth_scale.py", "--chunks_dir", f"{args.chunks_dir}", "--depths_dir", os.path.join(args.project_dir, "camera_calibration/rectified", "depths")],
             check=True
         )
     except subprocess.CalledProcessError as e:

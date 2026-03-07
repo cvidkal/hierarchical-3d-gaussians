@@ -65,6 +65,7 @@ class ModelParams(ParamGroup):
         self.scaffold_file = ""
         self.bounds_file = ""
         self.skybox_locked = False
+        self._lidar_depths = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -103,6 +104,7 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.015
         self.depth_l1_weight_init = 1.0
         self.depth_l1_weight_final = 0.01
+        self.lidar_depth_weight = 1.0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

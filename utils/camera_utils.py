@@ -52,6 +52,17 @@ def loadCam(args, id, cam_info, resolution_scale, is_test_dataset):
     else:
         invdepthmap = None
 
+    lidar_depth_data = None
+    if cam_info.lidar_depth_path != "":
+        try:
+            data = np.load(cam_info.lidar_depth_path)
+            lidar_u = data['u'].astype(np.float32)
+            lidar_v = data['v'].astype(np.float32)
+            lidar_d = data['depth'].astype(np.float32)
+        except Exception as e:
+            print(f"Warning: failed to load LiDAR depth {cam_info.lidar_depth_path}: {e}")
+            lidar_u = None
+
     orig_w, orig_h = image.size
 
     if args.resolution in [1, 2, 4, 8]:
@@ -73,11 +84,26 @@ def loadCam(args, id, cam_info, resolution_scale, is_test_dataset):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
+    # Scale LiDAR depth coords from original to training resolution, convert to inv depth
+    if cam_info.lidar_depth_path != "" and lidar_u is not None and len(lidar_u) > 0:
+        train_w, train_h = resolution
+        sx = train_w / orig_w
+        sy = train_h / orig_h
+        u_scaled = np.clip(np.round(lidar_u * sx).astype(np.int64), 0, train_w - 1)
+        v_scaled = np.clip(np.round(lidar_v * sy).astype(np.int64), 0, train_h - 1)
+        inv_d = 1.0 / lidar_d  # metric depth -> inverse depth
+        lidar_depth_data = (
+            torch.from_numpy(u_scaled),   # (N,) long - pixel x
+            torch.from_numpy(v_scaled),   # (N,) long - pixel y
+            torch.from_numpy(inv_d),      # (N,) float - inverse depth
+        )
+
+    return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, depth_params=cam_info.depth_params,
                   primx=cam_info.primx, primy=cam_info.primy,
                   image=image, alpha_mask=alpha_mask, invdepthmap=invdepthmap,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, 
+                  lidar_depth_data=lidar_depth_data,
+                  image_name=cam_info.image_name, uid=id, data_device=args.data_device,
                   train_test_exp=args.train_test_exp, is_test_dataset=is_test_dataset, is_test_view=cam_info.is_test)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):

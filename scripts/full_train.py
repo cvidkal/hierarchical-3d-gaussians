@@ -27,7 +27,19 @@ def is_job_finished(job_id):
 
 def setup_dirs(images, depths, masks, colmap, chunks, output, project):
     images_dir = "../rectified/images" if images == "" else images
-    depths_dir = "../rectified/depths" if depths == "" else depths
+    if depths == "":
+        # Only use default depths dir if depth_params.json exists in chunks
+        chunks_d = os.path.join(project, "camera_calibration", "chunks")
+        if os.path.isdir(chunks_d):
+            first_chunk = next((c for c in os.listdir(chunks_d) if os.path.isdir(os.path.join(chunks_d, c))), None)
+            if first_chunk and os.path.exists(os.path.join(chunks_d, first_chunk, "sparse/0/depth_params.json")):
+                depths_dir = "../rectified/depths"
+            else:
+                depths_dir = ""
+        else:
+            depths_dir = ""
+    else:
+        depths_dir = depths
     if masks == "":
         if os.path.exists(os.path.join(project, "camera_calibration/rectified/masks")):
             masks_dir = "../rectified/masks"
@@ -96,7 +108,7 @@ if __name__ == '__main__':
                 time.sleep(10)
         else:
             train_coarse_args =  " ".join([
-                "python", "train_coarse.py",
+                sys.executable, "train_coarse.py",
                 "-s", colmap_dir,
                 "--save_iterations", "-1",
                 "-i", images_dir,
@@ -117,19 +129,22 @@ if __name__ == '__main__':
 
     if not os.path.isabs(images_dir):
         images_dir = os.path.join("../", images_dir)
-    if not os.path.isabs(depths_dir):
+    if depths_dir != "" and not os.path.isabs(depths_dir):
         depths_dir = os.path.join("../", depths_dir)
     if masks_dir != "" and not os.path.isabs(masks_dir):
         masks_dir = os.path.join("../", masks_dir)
 
     ## Now we can train each chunks using the scaffold previously created
-    train_chunk_args =  " ".join([
-        "python", "-u train_single.py",
+    train_chunk_args_list = [
+        sys.executable, "-u train_single.py",
         "--save_iterations -1",
-        f"-i {images_dir}", f"-d {depths_dir}",
+        f"-i {images_dir}",
         f"--scaffold_file {output_dir}/scaffold/point_cloud/iteration_30000",
-        "--skybox_locked" 
-    ])
+        "--skybox_locked"
+    ]
+    if depths_dir != "":
+        train_chunk_args_list.insert(4, f"-d {depths_dir}")
+    train_chunk_args = " ".join(train_chunk_args_list)
     if masks_dir != "":
         train_chunk_args += " --alpha_masks " + masks_dir
     if args.extra_training_args != "": 
@@ -139,7 +154,7 @@ if __name__ == '__main__':
     hierarchy_creator_args = os.path.join(f_path.parent.parent, hierarchy_creator_args)
 
     post_opt_chunk_args =  " ".join([
-        "python", "-u train_post.py",
+        sys.executable, "-u train_post.py",
         "--iterations 15000", "--feature_lr 0.0005",
         "--opacity_lr 0.01", "--scaling_lr 0.001", "--save_iterations -1",
         f"-i {images_dir}",  f"--scaffold_file {output_dir}/scaffold/point_cloud/iteration_30000",
@@ -155,14 +170,32 @@ if __name__ == '__main__':
         source_chunk = os.path.join(chunks_dir, chunk_name)
         trained_chunk = os.path.join(output_dir, "trained_chunks", chunk_name)
 
-        if args.skip_if_exists and os.path.exists(os.path.join(trained_chunk, "hierarchy.hier_opt")):
-            print(f"Skipping {chunk_name}")
+        hier_opt_path = os.path.join(trained_chunk, "hierarchy.hier_opt")
+        hier_path = os.path.join(trained_chunk, "hierarchy.hier")
+
+        if args.skip_if_exists and os.path.exists(hier_opt_path):
+            print(f"Skipping {chunk_name} (fully done)")
+        elif args.skip_if_exists and os.path.exists(hier_path):
+            # hierarchy exists but post-opt not done, only run post-opt
+            print(f"Skipping train+hierarchy for {chunk_name}, running post-opt only")
+            print(f"post optimizing chunk {chunk_name}")
+            try:
+                subprocess.run(
+                    post_opt_chunk_args + " -s "+ source_chunk +
+                    " --model_path " + trained_chunk +
+                    " --hierarchy " + hier_path,
+                    shell=True, check=True
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"Error executing train_post: {e}")
+                if not args.keep_running:
+                    sys.exit(1)
         else:
             ## Training can be done in parallel using slurm.
             if args.use_slurm:
                 job_id = submit_job(slurm_args + [
                     f"--error={trained_chunk}/log.err", f"--output={trained_chunk}/log.out",
-                    "train_chunk.slurm", source_chunk, output_dir, args.env_name, 
+                    "train_chunk.slurm", source_chunk, output_dir, args.env_name,
                     chunk_name, hierarchy_creator_args, images_dir,
                     depths_dir, " --alpha_masks " + masks_dir
                 ])
@@ -172,7 +205,7 @@ if __name__ == '__main__':
                 print(f"Training chunk {chunk_name}")
                 try:
                     subprocess.run(
-                        train_chunk_args + " -s "+ source_chunk + 
+                        train_chunk_args + " -s "+ source_chunk +
                         " --model_path " + trained_chunk +
                         " --bounds_file "+ source_chunk,
                         shell=True, check=True
@@ -203,15 +236,15 @@ if __name__ == '__main__':
             print(f"post optimizing chunk {chunk_name}")
             try:
                 subprocess.run(
-                    post_opt_chunk_args + " -s "+ source_chunk + 
+                    post_opt_chunk_args + " -s "+ source_chunk +
                     " --model_path " + trained_chunk +
-                    " --hierarchy " + os.path.join(trained_chunk, "hierarchy.hier"),
+                    " --hierarchy " + hier_path,
                     shell=True, check=True
                 )
             except subprocess.CalledProcessError as e:
                 print(f"Error executing train_post: {e}")
                 if not args.keep_running:
-                    sys.exit(1) # TODO: log where it fails and don't add it to the consolidation and add a warning at the end
+                    sys.exit(1)
 
     if args.use_slurm:
         # Check every 10 sec all the jobs status

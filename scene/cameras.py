@@ -26,6 +26,7 @@ class Camera(nn.Module):
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp=False, is_test_dataset=False, is_test_view=False,
+                 lidar_depth_data=None,
                  ):
         super(Camera, self).__init__()
 
@@ -85,6 +86,16 @@ class Camera(nn.Module):
                 self.depth_mask *= 0
             else:
                 self.depth_reliable = True
+
+        # LiDAR sparse depth — lidar_depth_data is already scaled (u, v, invdepth) tensors
+        # or None. Prepared by loadCam.
+        self.lidar_invdepth = None
+        self.lidar_pixel_y = None
+        self.lidar_pixel_x = None
+        if lidar_depth_data is not None:
+            self.lidar_pixel_x = lidar_depth_data[0].to(self.data_device)   # (N,) long
+            self.lidar_pixel_y = lidar_depth_data[1].to(self.data_device)   # (N,) long
+            self.lidar_invdepth = lidar_depth_data[2].to(self.data_device)  # (N,) float
 
         self.zfar = 100.0
         self.znear = 0.01

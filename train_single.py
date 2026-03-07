@@ -113,11 +113,22 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
                     depth_mask = viewpoint_cam.depth_mask.cuda()
 
                     Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-                    Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
+                    Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
                     loss += Ll1depth
                     Ll1depth = Ll1depth.item()
                 else:
                     Ll1depth = 0
+
+                # LiDAR depth loss (sparse, metric, hard constraint)
+                Llidar = 0
+                if opt.lidar_depth_weight > 0 and viewpoint_cam.lidar_invdepth is not None:
+                    lx = viewpoint_cam.lidar_pixel_x.cuda()
+                    ly = viewpoint_cam.lidar_pixel_y.cuda()
+                    lidar_inv = viewpoint_cam.lidar_invdepth.cuda()
+                    rendered_inv_at_lidar = invDepth[0, ly, lx]
+                    Llidar = opt.lidar_depth_weight * torch.abs(rendered_inv_at_lidar - lidar_inv).mean()
+                    loss += Llidar
+                    Llidar = Llidar.item()
 
 
                 loss.backward()
@@ -127,8 +138,11 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
                     # Progress bar
                     ema_loss_for_log = 0.4 * photo_loss.item() + 0.6 * ema_loss_for_log
                     ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
+                    if not hasattr(training, '_ema_lidar'):
+                        training._ema_lidar = 0.0
+                    training._ema_lidar = 0.4 * (Llidar if isinstance(Llidar, float) else Llidar) + 0.6 * training._ema_lidar
                     if iteration % 10 == 0:
-                        progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}", "Size": f"{gaussians._xyz.size(0)}"})
+                        progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth": f"{ema_Ll1depth_for_log:.{7}f}", "LiDAR": f"{training._ema_lidar:.{7}f}", "Size": f"{gaussians._xyz.size(0)}"})
                         progress_bar.update(10)
 
                     # Log and save
