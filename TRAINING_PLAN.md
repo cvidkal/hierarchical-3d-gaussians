@@ -21,7 +21,7 @@ git checkout feat/lidar-init-fix
 ## 核心问题与修复
 
 ### 已诊断的根本原因
-Hierarchy-GS 的 chunk 分割会把完整的 LiDAR 点云（8.3M）只分配约 190K 给每个 chunk。
+Hierarchy-GS 的 chunk 分割会把完整的 LiDAR 点云（如 8.3M）只分配约 190K 给每个 chunk。
 边缘相机看到的区域只有 scaffold ring 的稀疏点（被 `--skybox_locked` 锁死无法 densify），
 导致渲染出大片黑色，PSNR 低至 6-11，拖垮整体均值到 18。
 
@@ -33,6 +33,83 @@ Hierarchy-GS 的 chunk 分割会把完整的 LiDAR 点云（8.3M）只分配约 
 - 覆盖好的视角 PSNR 已达 24-25（说明相机参数、FOV 都没问题）
 - FOV **不需要裁剪**，直接用去畸变后的完整图像
 - Depth Anything 深度监督有效
+
+---
+
+## ⚠️ 关键注意事项（常见误区）
+
+### 1. points3D 不是空的
+`prepare_hierarchy_gs.py` / `share_to_colmap.py` 生成的 `points3D.bin`/`points3D.ply`
+应该包含下采样的 LiDAR 点（如 ds5cm 的 8.3M 点），不是空的。
+这些点是训练初始化的基础。如果 points3D 是空的，训练会失败。
+
+### 2. `--init_ply` 是最关键的参数（必须加！）
+**这是我们诊断出的核心修复。** chunk splitting 会把百万级点云砍到只有 ~190K/chunk。
+不加 `--init_ply` 的后果：
+- 边缘视角只有 5K-12K 个高斯（正常应该 50万+）
+- 渲染出大片黑色，PSNR 低至 6-11
+- 整体均值被拖到 18（本应 24+）
+
+**scaffold 训练和 chunk 训练都要传 `--init_ply`！**
+
+### 3. LiDAR 深度图格式区别
+代码里有两种深度渲染工具，格式不同：
+
+| 工具 | 输出格式 | 用途 | 训练参数 |
+|------|---------|------|---------|
+| `preprocess/generate_lidar_depth.py` | `.npz` (含 u, v, depth 数组) | LiDAR 稀疏深度约束 | `--lidar_depths` |
+| `preprocess/gpu_depth_render.py` | 16-bit PNG (全图深度) | 仅供可视化/调试 | **不兼容训练代码** |
+
+训练代码 (`utils/camera_utils.py`) 只认 `.npz` 格式（含 u, v, depth 键）。
+**不要把 gpu_depth_render.py 的 PNG 输出传给 `--lidar_depths`，会被静默忽略。**
+
+### 4. Depth Anything 深度 vs LiDAR 深度
+- Depth Anything (`-d` 参数): 16-bit PNG 逆深度图，每个像素都有值，但是**相对深度**（单目估计）
+- LiDAR 深度 (`--lidar_depths`): .npz 稀疏深度，只有 LiDAR 能打到的像素有值，但是**绝对精确深度**
+- 两者互补：Depth Anything 提供全局几何引导，LiDAR 提供局部精确约束
+
+### 5. FOV 不需要裁剪
+之前怀疑过鱼眼裁剪后的宽 FOV 可能影响质量。已验证否定：
+- 横店 fx=885 (FOV 103°) 和 Project 2 fx=1475 (FOV 74°) PSNR 问题一样
+- 覆盖好的区域已达 24-25 PSNR
+- 直接用去畸变后的完整图像训练即可
+
+---
+
+## SHARE SLAM 数据 Pipeline
+
+```
+SHARE SLAM 设备输出
+  ├── undistort/ImgPose.txt        (相机 c2w pose: position + quaternion)
+  ├── undistort/left/              (去畸变左相机图像)
+  ├── undistort/left_undistort_intrinsic.txt  (相机内参)
+  └── colorized.ply                (LiDAR 全局点云, 1-3亿点)
+        │
+        ▼
+[share_to_colmap.py]
+  - ImgPose.txt 的 c2w → COLMAP 的 w2c (四元数共轭 + T = -R_w2c @ pos)
+  - 内参 → cameras.bin (PINHOLE 模型)
+  - LiDAR 下采样 → points3D.bin (注意: 不是空的!)
+  - 输出: aligned/sparse/0/{cameras,images,points3D}.bin
+        │
+        ▼
+[prepare_hierarchy_gs.py]
+  - 采样 20万点建伪 2D-3D 对应 (让 auto_reorient/make_chunk 工作)
+  - auto_reorient: 对齐坐标系
+  - make_chunk: 按空间分块 (100m×100m)
+  - 输出: chunks/0_0, chunks/1_0, ...
+        │
+        ▼
+[Depth Anything V2]  →  depths/ 目录 (16-bit PNG 逆深度)
+[generate_lidar_depth.py]  →  lidar_depths/ 目录 (.npz 稀疏精确深度)
+        │
+        ▼
+[train_coarse.py]  ← scaffold (--init_ply 传完整 LiDAR 下采样)
+[train_single.py]  ← chunk训练 (--init_ply 传完整点云, -d 深度监督)
+[GaussianHierarchyCreator]  ← 层级生成
+[train_post.py]  ← 后优化
+[GaussianHierarchyMerger]  ← 合并所有 chunk
+```
 
 ---
 
@@ -58,7 +135,6 @@ Hierarchy-GS 的 chunk 分割会把完整的 LiDAR 点云（8.3M）只分配约 
 - 原始 LiDAR: `share-pointclouds-studio/横店/2026-02-09_14-04-12/output/2026-02-09_14-04-12_colorized.ply` (137M)
 
 **5090 建议:** 用原始 137M LiDAR 下采样到 3cm (约10-15M点) 作为 init_ply，比当前 3.78M 更密。
-下采样命令:
 ```python
 import open3d as o3d
 pcd = o3d.io.read_point_cloud("colorized.ply")
@@ -120,10 +196,11 @@ python -u train_single.py \
 ```
 
 **关键参数：**
-- `--init_ply`: **必须传完整 LiDAR 点云**，不要用 chunk 自带的 sparse (只有 190K)
+- `--init_ply`: **必须传完整 LiDAR 点云**，不要用 chunk 自带的 sparse (只有 ~190K)
 - `-d`: Depth Anything 深度图路径 (相对于 chunk source dir)
 - `--resolution 1`: 5090 有 32GB，可以全分辨率训练
 - `--skybox_locked`: 保持 scaffold 一致性
+- 可选: `--lidar_depths <LIDAR_DEPTHS_DIR>` (如果已生成 .npz 格式的 LiDAR 深度图)
 
 ### Step 3: Hierarchy 生成
 ```bash
@@ -162,6 +239,7 @@ GaussianHierarchyMerger <OUTPUT>/trained_chunks 0 <CHUNKS_DIR> <OUTPUT>/merged.h
 | 训练分辨率 | 自动降到 1.6K | **--resolution 1 (全分辨率 2952)** |
 | 迭代次数 | 30000 | **45000-60000** (更密的点需要更多迭代) |
 | Depth Anything | 有 | 有 |
+| LiDAR 深度 | 未使用 | 建议生成 .npz 配合 --lidar_depths |
 | FOV 裁剪 | 不需要 | **不需要** |
 
 ---
