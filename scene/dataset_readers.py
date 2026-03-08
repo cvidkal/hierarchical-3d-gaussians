@@ -186,7 +186,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, masks, depths, eval, train_test_exp, llffhold=None, lidar_depths=""):
+def readColmapSceneInfo(path, images, masks, depths, eval, train_test_exp, llffhold=None, lidar_depths="", init_ply=""):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -221,23 +221,29 @@ def readColmapSceneInfo(path, images, masks, depths, eval, train_test_exp, llffh
             sys.exit(1)
 
 
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
-    
-    try:
-        xyz_path = os.path.join(path, "sparse/0/xyz.pt")
-        rgb_path = os.path.join(path, "sparse/0/rgb.pt")
-        pcd = fetchPt(xyz_path, rgb_path)
-    except:
-        if not os.path.exists(ply_path):
-            print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
-            try:
-                xyz, rgb, _ = read_points3D_binary(bin_path)
-            except:
-                xyz, rgb, _ = read_points3D_text(txt_path)
-            storePly(ply_path, xyz, rgb)
+    if init_ply != "" and os.path.exists(init_ply):
+        print(f"Using external PLY for initialization: {init_ply}")
+        ply_path = init_ply
         pcd = fetchPly(ply_path)
+        print(f"  Loaded {len(pcd.points)} points from external PLY")
+    else:
+        ply_path = os.path.join(path, "sparse/0/points3D.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
+
+        try:
+            xyz_path = os.path.join(path, "sparse/0/xyz.pt")
+            rgb_path = os.path.join(path, "sparse/0/rgb.pt")
+            pcd = fetchPt(xyz_path, rgb_path)
+        except:
+            if not os.path.exists(ply_path):
+                print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+                try:
+                    xyz, rgb, _ = read_points3D_binary(bin_path)
+                except:
+                    xyz, rgb, _ = read_points3D_text(txt_path)
+                storePly(ply_path, xyz, rgb)
+            pcd = fetchPly(ply_path)
 
     if eval:
         if "360" in path:

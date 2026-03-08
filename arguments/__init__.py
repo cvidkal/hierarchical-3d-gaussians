@@ -66,6 +66,7 @@ class ModelParams(ParamGroup):
         self.bounds_file = ""
         self.skybox_locked = False
         self._lidar_depths = ""
+        self.init_ply = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
