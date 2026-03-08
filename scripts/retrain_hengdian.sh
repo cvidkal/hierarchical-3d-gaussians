@@ -119,6 +119,7 @@ for CHUNK in 0_0 1_0; do
             -s "$SRC" \
             -i "$IMAGES" \
             -d "$DEPTHS" \
+            --init_ply "$INIT_PLY" \
             --scaffold_file "$SCAFFOLD_DIR" \
             --skybox_locked \
             --bounds_file "$SRC" \
